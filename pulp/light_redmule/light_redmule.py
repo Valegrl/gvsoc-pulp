@@ -36,7 +36,7 @@ class LightRedmule(gvsoc.systree.Component):
 
         super().__init__(parent, name)
 
-        self.add_sources(['pulp/light_redmule/light_redmule.cpp'])
+        self.add_sources(['pulp/light_redmule/light_redmule.cpp', 'cpu/iss/flexfloat/flexfloat.c'])
 
         self.add_properties({
             'tcdm_bank_width'   : tcdm_bank_width,
@@ -52,7 +52,6 @@ class LightRedmule(gvsoc.systree.Component):
             'fold_tiles_mapping': fold_tiles_mapping,
             'loc_base'          : loc_base,
         })
-
     def i_INPUT(self) -> gvsoc.systree.SlaveItf:
         return gvsoc.systree.SlaveItf(self, 'input', signature='io')
 
@@ -80,7 +79,7 @@ class LightRedmule(gvsoc.systree.Component):
             Slave interface
         """
         self.itf_bind('offload_grant', itf, signature='wire<IssOffloadInsnGrant<uint32_t>*>')
-
+    
     def o_TCDM(self, itf: gvsoc.systree.SlaveItf):
         self.itf_bind('tcdm', itf, signature='io')
 
