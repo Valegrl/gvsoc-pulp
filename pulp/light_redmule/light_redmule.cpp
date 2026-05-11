@@ -101,10 +101,15 @@ public:
     static void offload_sync(vp::Block *__this, IssOffloadInsn<uint32_t> *insn);
     //static void offload_grant(vp::Block *__this, IssOffloadInsnGrant<iss_reg_t> *result);
     static void fsm_handler(vp::Block *__this, vp::ClockEvent *event);
+    static void tcdm_grant(vp::Block *__this, vp::IoReq *req);
+    static void tcdm_response(vp::Block *__this, vp::IoReq *req);
 
     uint32_t op_foramt_parser(uint32_t op_format);
 
     vp::IoReqStatus send_tcdm_req();
+    void tcdm_xfer_begin(uint32_t base_addr);
+    void tcdm_xfer_step();
+    void tcdm_xfer_complete();
     void init_redmule_meta_data();
     uint32_t tmp_next_addr();
     uint32_t next_addr();
@@ -143,6 +148,14 @@ public:
     int64_t             cycle_start;
     int64_t             total_runtime;
     int64_t             num_matmul;
+
+    // TCDM transfer state for async interconnects (one macro transfer split into per-bank chunks)
+    bool                tcdm_xfer_active;
+    bool                tcdm_xfer_waiting_resp;
+    uint32_t            tcdm_xfer_base;
+    uint32_t            tcdm_xfer_size;
+    uint32_t            tcdm_xfer_progress;
+    bool                tcdm_xfer_is_write;
 
     //redmule configuration
     uint32_t            tcdm_bank_width;
@@ -204,6 +217,7 @@ public:
 
     //redmule buffer
     uint8_t *           access_buffer;
+    uint32_t            access_buffer_size;
     uint8_t *           y_buffer_preload;
     uint8_t *           w_buffer;
     uint8_t *           x_buffer;
@@ -224,7 +238,10 @@ LightRedmule::LightRedmule(vp::ComponentConf &config)
     this->traces.new_trace("trace", &this->trace, vp::DEBUG);
     this->input_itf.set_req_meth(&LightRedmule::req);
     this->new_slave_port("input", &this->input_itf);
+    //add more interfaces here
     this->new_master_port("tcdm", &this->tcdm_itf);
+    this->tcdm_itf.set_resp_meth(&LightRedmule::tcdm_response);
+    this->tcdm_itf.set_grant_meth(&LightRedmule::tcdm_grant);
 
     // Declare offload slave interface where instructions will be offloaded
     this->offload_itf.set_sync_meth(&LightRedmule::offload_sync);
@@ -296,7 +313,8 @@ LightRedmule::LightRedmule(vp::ComponentConf &config)
     this->iter_z_row_ptr    = 0;
 
     //Initialize Buffers
-    this->access_buffer     = new uint8_t [this->bandwidth * 2];
+    this->access_buffer_size = this->bandwidth * 2;
+    this->access_buffer     = new uint8_t [this->access_buffer_size];
     this->y_buffer_preload  = new uint8_t [this->LOCAL_BUFFER_H * this->LOCAL_BUFFER_W * this->elem_size];
     this->w_buffer          = new uint8_t [this->LOCAL_BUFFER_N * this->LOCAL_BUFFER_W * this->elem_size];
     this->x_buffer          = new uint8_t [this->LOCAL_BUFFER_H * this->LOCAL_BUFFER_N * this->elem_size];
@@ -315,6 +333,13 @@ LightRedmule::LightRedmule(vp::ComponentConf &config)
     this->cycle_start       = 0;
     this->total_runtime     = 0;
     this->num_matmul        = 0;
+
+    this->tcdm_xfer_active = false;
+    this->tcdm_xfer_waiting_resp = false;
+    this->tcdm_xfer_base = 0;
+    this->tcdm_xfer_size = 0;
+    this->tcdm_xfer_progress = 0;
+    this->tcdm_xfer_is_write = false;
     
     this->trace.msg("[LightRedmule] Model Initialization Done!\n");
 }
@@ -1002,73 +1027,129 @@ vp::IoReqStatus LightRedmule::req(vp::Block *__this, vp::IoReq *req)
     return vp::IO_REQ_OK;
 }
 
-    // if ((is_write == 0) && (offset == 32) && (_this->redmule_query == NULL) && (_this->state.get() == IDLE))
-    // {
-    //     /************************
-    //     *  Synchronize Trigger  *
-    //     ************************/
-    //     //Sanity Check
-    //     _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] redmule configuration (M-N-K): %d, %d, %d\n", _this->m_size, _this->n_size, _this->k_size);
-    //     if ((_this->m_size == 0)||(_this->n_size == 0)||(_this->k_size == 0))
-    //     {
-    //         _this->trace.fatal("[LightRedmule] INVALID redmule configuration (M-N-K): %d, %d, %d\n", _this->m_size, _this->n_size, _this->k_size);
-    //         return vp::IO_REQ_OK;
-    //     }
-
-    //     //Initilaize redmule meta data
-    //     _this->init_redmule_meta_data();
-
-    //     //Trigger FSM
-    //     _this->state.set(PRELOAD);
-    //     _this->tcdm_block_total = _this->get_preload_access_block_number();
-    //     _this->fsm_counter      = 0;
-    //     _this->fsm_timestamp    = 0;
-    //     _this->timer_start      = _this->time.get_time();
-    //     _this->cycle_start      = _this->clock.get_cycles();
-    //     _this->compute_able     = 0;
-    //     _this->event_enqueue(_this->fsm_event, 1);
-
-    //     //Save Query
-    //     _this->redmule_query = req;
-    //     return vp::IO_REQ_PENDING;
-
-    // } else if ((is_write == 0) && (offset == 36) && (_this->state.get() == IDLE)){
-    //     /*************************
-    //     *  Asynchronize Trigger  *
-    //     *************************/
-    //     //Sanity Check
-    //     _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] redmule configuration (M-N-K): %d, %d, %d\n", _this->m_size, _this->n_size, _this->k_size);
-    //     if ((_this->m_size == 0)||(_this->n_size == 0)||(_this->k_size == 0))
-    //     {
-    //         _this->trace.fatal("[LightRedmule] INVALID redmule configuration (M-N-K): %d, %d, %d\n", _this->m_size, _this->n_size, _this->k_size);
-    //         return vp::IO_REQ_OK;
-    //     }
-
-    //     //Initilaize redmule meta data
-    //     _this->init_redmule_meta_data();
-
-    //     //Trigger FSM
-    //     _this->state.set(PRELOAD);
-    //     _this->tcdm_block_total = _this->get_preload_access_block_number();
-    //     _this->fsm_counter      = 0;
-    //     _this->fsm_timestamp    = 0;
-    //     _this->timer_start      = _this->time.get_time();
-    //     _this->cycle_start      = _this->clock.get_cycles();
-    //     _this->compute_able     = 0;
-    //     _this->event_enqueue(_this->fsm_event, 1);
-
-    // } else if ((is_write == 0) && (offset == 40) && (_this->redmule_query == NULL) && (_this->state.get() != IDLE)){
-    //     /*************************
-    //     *  Asynchronize Waiting  *
-    //     *************************/
-    //     _this->redmule_query = req;
-    //     return vp::IO_REQ_PENDING;
-
 vp::IoReqStatus LightRedmule::send_tcdm_req()
 {
-    this->trace.msg("[LightRedmule] send_tcdm_req\n");
+    this->trace.msg(vp::Trace::LEVEL_TRACE, "[LightRedmule] send_tcdm_req\n");
     return this->tcdm_itf.req(this->tcdm_req);
-    this->trace.msg("[LightRedmule] finished send_tcdm_req\n");
+}
+
+void LightRedmule::tcdm_xfer_begin(uint32_t base_addr)
+{
+    this->tcdm_xfer_active = true;
+    this->tcdm_xfer_waiting_resp = false;
+    this->tcdm_xfer_base = base_addr;
+    this->tcdm_xfer_size = this->tcdm_req->get_size();
+    this->tcdm_xfer_progress = 0;
+    this->tcdm_xfer_is_write = this->tcdm_req->get_is_write();
+
+    if (this->tcdm_xfer_size > this->access_buffer_size)
+    {
+        this->trace.fatal("[LightRedmule] TCDM transfer size is bigger than access_buffer (xfer_size=%u, access_buffer=%u)\n",
+            this->tcdm_xfer_size, this->access_buffer_size);
+    }
+}
+
+void LightRedmule::tcdm_xfer_complete()
+{
+    if (this->compute_able != 0 && !this->tcdm_xfer_is_write)
+    {
+        this->process_iter_instruction();
+    }
+
+    this->fsm_counter += 1;
+
+    this->tcdm_xfer_active = false;
+    this->tcdm_xfer_waiting_resp = false;
+    this->tcdm_xfer_base = 0;
+    this->tcdm_xfer_size = 0;
+    this->tcdm_xfer_progress = 0;
+    this->tcdm_xfer_is_write = false;
+}
+
+void LightRedmule::tcdm_xfer_step()
+{
+    if (!this->tcdm_xfer_active || this->tcdm_xfer_waiting_resp)
+    {
+        return;
+    }
+
+    // When the interconnect is synchronous, we can send all chunks in the same cycle.
+    // As soon as we get an asynchronous reply, stop and wait for the response callback.
+    while (this->tcdm_xfer_active && !this->tcdm_xfer_waiting_resp && this->tcdm_xfer_progress < this->tcdm_xfer_size)
+    {
+        uint32_t addr = this->tcdm_xfer_base + this->tcdm_xfer_progress;
+        uint32_t remaining = this->tcdm_xfer_size - this->tcdm_xfer_progress;
+
+        // Split macro transfer into chunks that fit within one bank to avoid interleaver async limitation.
+        uint32_t chunk_size = remaining;
+        if (this->tcdm_bank_width != 0)
+        {
+            uint32_t misalign = addr % this->tcdm_bank_width;
+            uint32_t max_size = this->tcdm_bank_width - misalign;
+            if (chunk_size > max_size) chunk_size = max_size;
+        }
+
+        this->tcdm_req->init();
+        this->tcdm_req->set_is_write(this->tcdm_xfer_is_write);
+        this->tcdm_req->set_addr(addr);
+        this->tcdm_req->set_size(chunk_size);
+        this->tcdm_req->set_data(this->access_buffer + this->tcdm_xfer_progress);
+
+        vp::IoReqStatus status = this->send_tcdm_req();
+        if (status == vp::IO_REQ_OK)
+        {
+            this->tcdm_xfer_progress += chunk_size;
+        }
+        else if (status == vp::IO_REQ_PENDING || status == vp::IO_REQ_DENIED)
+        {
+            this->tcdm_xfer_waiting_resp = true;
+        }
+        else
+        {
+            this->trace.fatal("[LightRedmule] TCDM access returned invalid status (status=%d, addr=0x%08x, size=%u)\n",
+                status, addr, chunk_size);
+        }
+    }
+
+    if (this->tcdm_xfer_active && !this->tcdm_xfer_waiting_resp && this->tcdm_xfer_progress >= this->tcdm_xfer_size)
+    {
+        this->tcdm_xfer_complete();
+    }
+}
+
+void LightRedmule::tcdm_grant(vp::Block *__this, vp::IoReq *req)
+{
+    // Grant can be used to model timing for denied requests. The current LightRedmule model
+    // does not pipeline requests when using async interconnects, so we don't need to act here.
+    (void)req;
+    LightRedmule *_this = (LightRedmule *)__this;
+    _this->trace.msg(vp::Trace::LEVEL_TRACE, "[LightRedmule] TCDM grant\n");
+}
+
+void LightRedmule::tcdm_response(vp::Block *__this, vp::IoReq *req)
+{
+    LightRedmule *_this = (LightRedmule *)__this;
+
+    if (!_this->tcdm_xfer_active || !_this->tcdm_xfer_waiting_resp)
+    {
+        _this->trace.msg(vp::Trace::LEVEL_TRACE, "[LightRedmule] Unexpected TCDM response (active=%d waiting=%d)\n",
+            _this->tcdm_xfer_active, _this->tcdm_xfer_waiting_resp);
+        return;
+    }
+
+    if (req->status == vp::IO_REQ_INVALID)
+    {
+        _this->trace.fatal("[LightRedmule] TCDM response returned invalid status (addr=0x%08llx, size=%llu)\n",
+            (unsigned long long)req->get_addr(), (unsigned long long)req->get_size());
+    }
+
+    _this->tcdm_xfer_waiting_resp = false;
+    _this->tcdm_xfer_progress += req->get_size();
+
+    if (_this->tcdm_xfer_progress >= _this->tcdm_xfer_size)
+    {
+        _this->tcdm_xfer_complete();
+    }
 }
 
 void LightRedmule::fsm_handler(vp::Block *__this, vp::ClockEvent *event)
@@ -1084,57 +1165,19 @@ void LightRedmule::fsm_handler(vp::Block *__this, vp::ClockEvent *event)
             break;
 
         case PRELOAD: {
-            //Send Request Process
-            if ((_this->fsm_counter < _this->tcdm_block_total) && (_this->pending_req_queue.size() <= _this->queue_depth))
+            if (!_this->tcdm_xfer_active && _this->fsm_counter < _this->tcdm_block_total)
             {
-                //Form request
                 uint32_t temp_addr=_this->next_addr() - _this->loc_base;
-                _this->tcdm_req->init();
-                _this->tcdm_req->set_addr(temp_addr);
-                _this->tcdm_req->set_data(_this->access_buffer);
-
-                //Send request
-                vp::IoReqStatus err = _this->send_tcdm_req();
-                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule][Preload] --- Send TCDM req #%d [addr=0x%08x]\n",_this->fsm_counter,temp_addr);
-
-                //Check error
-                if (err != vp::IO_REQ_OK) {
-                    _this->trace.msg("[LightRedmule][Error in Preload] --- m_size: %d, x_addr = %d\n",_this->m_size,_this->x_addr);
-                    _this->trace.fatal("[LightRedmule][Preload] There was an error while reading/writing data \n Send TCDM req #%d [addr=0x%08x]  --- m_size: %d, x_addr = %d\n",_this->fsm_counter,temp_addr,_this->m_size,_this->x_addr);
-                    return;
-                }
-
-                //Process Data if Compute Enabled
-                if (_this->compute_able != 0)
-                {
-                    _this->process_iter_instruction();
-                }
-
-                //Counte on receiving cycle
-                uint32_t receive_stamp = _this->tcdm_req->get_latency() + _this->fsm_timestamp;
-
-                //Push pending request queue
-                _this->pending_req_queue.push(receive_stamp);
-
-                //Add counter
-                _this->fsm_counter += 1;
+                _this->tcdm_xfer_begin(temp_addr);
+                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule][Preload] --- Begin TCDM xfer #%d [addr=0x%08x, size=0x%x]\n",
+                    _this->fsm_counter, temp_addr, _this->tcdm_xfer_size);
             }
 
-            //Recieve Process
-            while((_this->pending_req_queue.size()!= 0) && (_this->pending_req_queue.front() <= _this->fsm_timestamp)){
-                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule][Preload] ---                           Receive TCDM resp\n");
-                // std::string out;
-                // for (int i = 0; i < _this->tcdm_req->get_size(); i += 2) {
-                //     char tmp[16];
-                //     snprintf(tmp, sizeof(tmp), "0x%02x%02x, ", _this->access_buffer[i + 1], _this->access_buffer[i]);
-                //     out += tmp;
-                // }
-                // _this->trace.msg(vp::Trace::LEVEL_TRACE,"%s\n", out.c_str());
-                _this->pending_req_queue.pop();
-            }
+            // Advance macro transfer by sending at most one bank-sized chunk
+            _this->tcdm_xfer_step();
 
             //Jump
-            if ((_this->fsm_counter >= _this->tcdm_block_total) && (_this->pending_req_queue.size() == 0))
+            if ((_this->fsm_counter >= _this->tcdm_block_total) && !_this->tcdm_xfer_active)
             {
                 _this->tcdm_block_total = _this->get_routine_access_block_number();
                 _this->fsm_counter      = 0;
@@ -1155,62 +1198,26 @@ void LightRedmule::fsm_handler(vp::Block *__this, vp::ClockEvent *event)
             break;
         }
         case ROUTINE: {
-            //Send Request Process
-            if ((_this->fsm_counter < _this->tcdm_block_total) && (_this->pending_req_queue.size() <= _this->queue_depth))
+            if (!_this->tcdm_xfer_active && _this->fsm_counter < _this->tcdm_block_total)
             {
-                //Form request
                 uint32_t temp_addr=_this->next_addr() - _this->loc_base;
-                _this->tcdm_req->init();
-                _this->tcdm_req->set_addr(temp_addr);
-                _this->tcdm_req->set_data(_this->access_buffer);
 
-                //Process Data if Compute Enabled
+                // Prepare write payload before issuing store requests
                 if (_this->compute_able != 0 && (_this->iter_instruction == INSTR_STOR_Z))
                 {
                     _this->process_iter_instruction();
                 }
 
-                //Send request
-                vp::IoReqStatus err = _this->send_tcdm_req();
-                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule][ROUTINE-ijk: %0d-%0d-%0d] --- Send TCDM req #%d [addr=0x%08x]\n", _this->iter_i, _this->iter_j, _this->iter_k, _this->fsm_counter,temp_addr);
-
-                //Check error
-                if (err != vp::IO_REQ_OK) {
-                    _this->trace.fatal("[LightRedmule][ROUTINE-ijk: %0d-%0d-%0d] There was an error while reading/writing data\n", _this->iter_i, _this->iter_j, _this->iter_k);
-                    return;
-                }
-
-                //Process Data if Compute Enabled
-                if (_this->compute_able != 0 && _this->iter_instruction != INSTR_STOR_Z)
-                {
-                    _this->process_iter_instruction();
-                }
-
-                //Counte on receiving cycle
-                uint32_t receive_stamp = _this->tcdm_req->get_latency() + _this->fsm_timestamp;
-
-                //Push pending request queue
-                _this->pending_req_queue.push(receive_stamp);
-
-                //Add counter
-                _this->fsm_counter += 1;
+                _this->tcdm_xfer_begin(temp_addr);
+                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule][ROUTINE-ijk: %0d-%0d-%0d] --- Begin TCDM xfer #%d [addr=0x%08x, size=0x%x, is_write=%d]\n",
+                    _this->iter_i, _this->iter_j, _this->iter_k, _this->fsm_counter, temp_addr, _this->tcdm_xfer_size, _this->tcdm_xfer_is_write);
             }
 
-            //Recieve Process
-            while((_this->pending_req_queue.size()!= 0) && (_this->pending_req_queue.front() <= _this->fsm_timestamp) ){
-                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule][ROUTINE-ijk: %0d-%0d-%0d] ---                           Receive TCDM resp\n", _this->iter_i, _this->iter_j, _this->iter_k);
-                // std::string out;
-                // for (int i = 0; i < _this->tcdm_req->get_size(); i += 2) {
-                //     char tmp[16];
-                //     snprintf(tmp, sizeof(tmp), "0x%02x%02x, ", _this->access_buffer[i + 1], _this->access_buffer[i]);
-                //     out += tmp;
-                // }
-                // _this->trace.msg(vp::Trace::LEVEL_TRACE,"%s\n", out.c_str());
-                _this->pending_req_queue.pop();
-            }
+            // Advance macro transfer by sending at most one bank-sized chunk
+            _this->tcdm_xfer_step();
 
             //Jump
-            if ((_this->fsm_counter >= _this->tcdm_block_total) && (_this->pending_req_queue.size() == 0))
+            if ((_this->fsm_counter >= _this->tcdm_block_total) && !_this->tcdm_xfer_active)
             {
                 int modeled_runtime = _this->get_redmule_array_runtime();
                 int64_t latency = 1;
@@ -1255,56 +1262,26 @@ void LightRedmule::fsm_handler(vp::Block *__this, vp::ClockEvent *event)
             break;
         }
         case STORING: {
-            //Send Request Process
-            if ((_this->fsm_counter < _this->tcdm_block_total) && (_this->pending_req_queue.size() <= _this->queue_depth))
+            if (!_this->tcdm_xfer_active && _this->fsm_counter < _this->tcdm_block_total)
             {
-                //Form request
                 uint32_t temp_addr=_this->next_addr() - _this->loc_base;
-                _this->tcdm_req->init();
-                _this->tcdm_req->set_addr(temp_addr);
-                _this->tcdm_req->set_data(_this->access_buffer);
 
-                //Process Data if Compute Enabled
+                // Prepare write payload before issuing store requests
                 if (_this->compute_able != 0 && (_this->iter_instruction == INSTR_STOR_Z))
                 {
                     _this->process_iter_instruction();
                 }
 
-                //Send request
-                vp::IoReqStatus err = _this->send_tcdm_req();
-                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule][Storing] --- Send TCDM req #%d [addr=0x%08x]\n",_this->fsm_counter,temp_addr);
-
-                //Check error
-                if (err != vp::IO_REQ_OK) {
-                    _this->trace.fatal("[LightRedmule][Storing] There was an error while reading/writing data\n");
-                    return;
-                }
-
-                //Counte on receiving cycle
-                uint32_t receive_stamp = _this->tcdm_req->get_latency() + _this->fsm_timestamp;
-
-                //Push pending request queue
-                _this->pending_req_queue.push(receive_stamp);
-
-                //Add counter
-                _this->fsm_counter += 1;
+                _this->tcdm_xfer_begin(temp_addr);
+                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule][Storing] --- Begin TCDM xfer #%d [addr=0x%08x, size=0x%x]\n",
+                    _this->fsm_counter, temp_addr, _this->tcdm_xfer_size);
             }
 
-            //Recieve Process
-            while((_this->pending_req_queue.size()!= 0) && (_this->pending_req_queue.front() <= _this->fsm_timestamp) ){
-                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule][Storing] ---                           Receive TCDM resp\n");
-                // std::string out;
-                // for (int i = 0; i < _this->tcdm_req->get_size(); i += 2) {
-                //     char tmp[16];
-                //     snprintf(tmp, sizeof(tmp), "0x%02x%02x, ", _this->access_buffer[i + 1], _this->access_buffer[i]);
-                //     out += tmp;
-                // }
-                // _this->trace.msg(vp::Trace::LEVEL_TRACE,"%s\n", out.c_str());
-                _this->pending_req_queue.pop();
-            }
+            // Advance macro transfer by sending at most one bank-sized chunk
+            _this->tcdm_xfer_step();
 
             //Jump
-            if ((_this->fsm_counter >= _this->tcdm_block_total) && (_this->pending_req_queue.size() == 0))
+            if ((_this->fsm_counter >= _this->tcdm_block_total) && !_this->tcdm_xfer_active)
             {
                 _this->tcdm_block_total = 0;
                 _this->fsm_counter      = 0;

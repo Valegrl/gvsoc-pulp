@@ -141,6 +141,7 @@ class Tile(st.Component):
         if has_redmule:
             ico_list[0].add_mapping('redmule_config', base=0x40020000, remove_offset=0x40020000, size=0x200)
             self.bind(ico_list[0], 'redmule_config', redmule, 'input')
+            #input connections to all 16 different tcdm connections of redmule
             self.bind(redmule, 'tcdm', l1, 'redmule_in')
 
 
