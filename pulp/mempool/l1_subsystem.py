@@ -150,19 +150,19 @@ class L1_subsystem(gvsoc.systree.Component):
             remote_local_out_interfaces = []
             for i in range(0, nb_remote_local_masters):
                 remote_local_out_interfaces.append(Router(self, f'remote_local_out_itf{i}', bandwidth=bandwidth, latency=1, shared_rw_bandwidth=True, \
-                                                synchronous=False, max_input_pending_size=5))
+                                                synchronous=True, max_input_pending_size=4))
                 remote_local_out_interfaces[i].add_mapping('output')
 
             remote_sub_group_out_interfaces = []
             for i in range(0, nb_remote_sub_group_masters):
                 remote_sub_group_out_interfaces.append(Router(self, f'remote_sub_group_out_itf{i}', bandwidth=bandwidth, latency=1, shared_rw_bandwidth=True, \
-                                                synchronous=False, max_input_pending_size=5))
+                                                synchronous=True, max_input_pending_size=4))
                 remote_sub_group_out_interfaces[i].add_mapping('output')
 
             remote_group_out_interfaces = []
             for i in range(0, nb_remote_group_masters):
                 remote_group_out_interfaces.append(Router(self, f'remote_group_out_itf{i}', bandwidth=bandwidth, latency=1, shared_rw_bandwidth=True, \
-                                                synchronous=False, max_input_pending_size=5))
+                                                synchronous=True, max_input_pending_size=4))
                 remote_group_out_interfaces[i].add_mapping('output')
 
         #Remote interfaces
@@ -199,7 +199,7 @@ class L1_subsystem(gvsoc.systree.Component):
             self.bind(self, f'pe_in{i}', local_interleavers[i], 'in_0')
 
         #Redmule input
-        self.bind(self, f'redmule_in', redmule_interleaver, 'in_0')
+        self.bind(self, f'RedMulE_input', redmule_interleaver, f'input')
 
 
         #Remote input

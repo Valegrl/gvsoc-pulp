@@ -42,12 +42,12 @@ class Tile(st.Component):
             #NOT FINISHED YET WITH PARAMETERISZING THESE
             redmule = LightRedmule(self, f'tile-{tile_id}-redmule',
                                     tcdm_bank_width     = 4,
-                                    tcdm_bank_number    = 8,
+                                    tcdm_bank_number    = 1024,
                                     elem_size           = 2,
                                     ce_height           = redmule_config.redmule_height,
                                     ce_width            = redmule_config.redmule_width,
                                     ce_pipe             = redmule_config.redmule_regs,
-                                    queue_depth         = 128
+                                    queue_depth         = 64
                                     )
 
         [args, __] = parser.parse_known_args()
@@ -142,7 +142,7 @@ class Tile(st.Component):
             ico_list[0].add_mapping('redmule_config', base=0x40020000, remove_offset=0x40020000, size=0x200)
             self.bind(ico_list[0], 'redmule_config', redmule, 'input')
             #input connections to all 16 different tcdm connections of redmule
-            self.bind(redmule, 'tcdm', l1, 'redmule_in')
+            self.bind(redmule, 'tcdm', l1, 'RedMulE_input')
 
 
         # L1 TCDM --> Remote TCDM interfaces
