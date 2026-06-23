@@ -31,6 +31,7 @@ class LightRedmule(gvsoc.systree.Component):
                 ce_width: int,
                 ce_pipe: int,
                 queue_depth: int=128,
+                ic_latency: int=0,    # modeled interconnect round-trip (cycles)
                 fold_tiles_mapping: int=0,
                 loc_base=0): #here we might add also local size to check that tcdm requests do not overflow...
 
@@ -49,6 +50,7 @@ class LightRedmule(gvsoc.systree.Component):
             'ce_width'          : ce_height,
             'ce_pipe'           : ce_pipe,
             'queue_depth'       : queue_depth,
+            'ic_latency'       : ic_latency,
             'fold_tiles_mapping': fold_tiles_mapping,
             'loc_base'          : loc_base,
         })
