@@ -42,14 +42,14 @@ class Tile(st.Component):
             #redmule = LightRedmule(self, 'redmule')
             redmule = LightRedmule(self, f'tile-{tile_id}-redmule',
                                     tcdm_bank_width     = 4,
-                                    tcdm_bank_number    = (redmule_config.redmule_height * (redmule_config.redmule_regs + 1) )// 2 ,
+                                    tcdm_bank_number    = redmule_config.tcdm_bank_number,
                                     elem_size           = 2,
                                     ce_height           = redmule_config.redmule_height,
                                     ce_width            = redmule_config.redmule_width,
                                     ce_pipe             = redmule_config.redmule_regs,
-                                    queue_depth         = 128,
-                                    stream_loads        = True,
-                                    row_refill_cyc      = 740
+                                    queue_depth         = redmule_config.queue_depth,
+                                    stream_loads        = redmule_config.stream_loads,
+                                    row_refill_cyc      = redmule_config.row_refill_cyc
                                     )
 
         [args, __] = parser.parse_known_args()
